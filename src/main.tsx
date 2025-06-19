@@ -19,10 +19,7 @@ import { StreamsProvider } from 'contexts/streams';
 import App from './App';
 import theme from './theme';
 
-const isBrowserSupported =
-  'documentPictureInPicture' in window &&
-  'MediaStreamTrackProcessor' in window &&
-  'MediaStreamTrackGenerator' in window;
+const isBrowserSupported = true;
 
 createRoot(document.getElementById('root') as HTMLElement).render(
   <StrictMode>
