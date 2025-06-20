@@ -3,15 +3,20 @@
   flex-direction: column;
   align-items: center;
   padding: 2rem;
-  max-width: 800px;
+  max-width: 95%;
   margin: 0 auto;
-  min-height: 100vh;
+  height: 88vh
 }
 
 .question {
   margin-bottom: 2rem;
   text-align: center;
   color: #333;
+  font-size: 15px;
+}
+
+.questionBox {
+  background-color: #e9ecef;
 }
 
 .videoContainer {
@@ -21,7 +26,6 @@
   margin-bottom: 2rem;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 .video {
@@ -37,7 +41,7 @@
   transform: translate(-50%, -50%);
   font-size: 8rem;
   font-weight: bold;
-  color: white;
+  color: #cbcbcb !important;
   text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
   animation: pulse 1s infinite;
 }
@@ -46,7 +50,7 @@
   position: absolute;
   top: 1rem;
   right: 1rem;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.7) !important;
   color: white;
   padding: 0.5rem 1rem;
   border-radius: 4px;
@@ -108,5 +112,6 @@
 
   .countdown {
     font-size: 6rem;
+    color: #e9ecef
   }
 } 

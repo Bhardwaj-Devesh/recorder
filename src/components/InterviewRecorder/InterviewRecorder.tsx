@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Box, Typography, Button, CircularProgress, Alert, Snackbar, Stepper, Step, StepLabel, Paper } from '@mui/material';
 import { useStreams } from 'contexts/streams';
 import useVideoSource from 'hooks/useVideoSource';
-import { fetchRoundQuestions } from 'services/api';
+import { fetchRoundQuestions, submitRoundAnswers } from 'services/api';
 import styles from './InterviewRecorder.module.css';
 
 const INTERVIEW_DURATION = 5; // 1 minute in seconds
@@ -32,6 +32,7 @@ const InterviewRecorder = () => {
   const [transcript, setTranscript] = useState<string>('');
   const [showSubmit, setShowSubmit] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { cameraStream } = useStreams();
   const updateCameraSource = useVideoSource(cameraStream);
@@ -235,7 +236,7 @@ const InterviewRecorder = () => {
     }
   };
 
-  const handleFinalSubmit = () => {
+  const handleFinalSubmit = async () => {
     // Save last answer if not already saved
     if (answers.length < questions.length) {
       const videoBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
@@ -244,15 +245,26 @@ const InterviewRecorder = () => {
         { video: videoBlob, transcript },
       ]);
     }
-    setSuccess(true);
+    setIsSubmitting(true);
     setShowSubmit(false);
-    // Log all answers
-    setTimeout(() => {
-      console.log('All answers:', [
-        ...answers,
-        { video: new Blob(recordedChunksRef.current, { type: 'video/webm' }), transcript },
-      ]);
-    }, 500);
+    try {
+      // Prepare answers as array of transcripts
+      const allAnswers = [
+        ...answers.map((a) => a.transcript),
+        transcript
+      ];
+      await submitRoundAnswers({
+        questions,
+        answers: allAnswers,
+        round: 'pre-screening',
+      });
+      setSuccess(true);
+    } catch (err) {
+      setError('Failed to submit answers. Please try again.');
+      setShowErrorSnackbar(true);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Add a useEffect to log the transcript when recording is done
@@ -294,103 +306,113 @@ const InterviewRecorder = () => {
   }
 
   return (
-    <Box className={styles.container}>
-      <Stepper activeStep={currentQuestion} alternativeLabel style={{ marginBottom: 24 }}>
-        {questions.map((q, idx) => (
-          <Step key={q} completed={answers.length > idx}>
-            <StepLabel>Q{idx + 1}</StepLabel>
-          </Step>
-        ))}
-      </Stepper>
-      <Paper elevation={2} className={styles.questionBox}>
-        <Typography variant="h5" className={styles.question} style={{ marginBottom: 8 }}>
-          {questions[currentQuestion]}
-        </Typography>
-      </Paper>
-      <Box className={styles.videoContainer}>
-        <video
-          ref={updateCameraSource}
-          autoPlay
-          playsInline
-          muted
-          className={styles.video}
-        />
-        {countdown > 0 && (
-          <Typography variant="h1" className={styles.countdown}>
-            {countdown}
-          </Typography>
-        )}
-        {isRecording && (
-          <Typography variant="h5" className={styles.timer}>
-            {timeLeft}s
-          </Typography>
-        )}
-      </Box>
-      <Box className={styles.controls}>
-        {!isRecording && !isTimerComplete && !isTranscribing && countdown === 0 && (
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={initiateRecording}
-            disabled={!cameraStream}
-            size="large"
-            style={{ minWidth: 180 }}
-          >
-            Start Recording
-          </Button>
-        )}
-        {isRecording && (
-          <Typography variant="body1" color="primary" style={{ marginTop: 12 }}>
-            Recording... Speak your answer
-          </Typography>
-        )}
-        {isTimerComplete && !isTranscribing && (
-          <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
-            <Typography variant="subtitle1" color="secondary" style={{ margin: '12px 0' }}>
-              Recording complete!
+    <Box
+      className={styles.container}
+      display="flex"
+      alignItems="center"
+      justifyContent="center"
+      sx={{ width: '95vw', margin: 'auto' }}
+    >
+      <Box display="flex" flexDirection="row" width="100%" height="100%" boxShadow={3} borderRadius={3} overflow="hidden" bgcolor="#fff">
+        {/* Left half: Info and actions */}
+        <Box flex={1} display="flex" flexDirection="column" justifyContent="center" alignItems="center" p={4} bgcolor="#f7f9fa">
+          <Stepper activeStep={currentQuestion} alternativeLabel style={{ width: '100%', marginBottom: 24 }}>
+            {questions.map((q, idx) => (
+              <Step key={q} completed={answers.length > idx}>
+                <StepLabel className={styles.question}>Q{idx + 1}</StepLabel>
+              </Step>
+            ))}
+          </Stepper>
+          <Paper elevation={2} className={styles.questionBox} style={{ width: '100%', marginBottom: 24, padding: 24 }}>
+            <Typography className={styles.question} style={{ marginBottom: 8 }}>
+              {questions[currentQuestion]}
             </Typography>
-            <Typography variant="body2" style={{ marginBottom: 8 }}>
-              <b>Transcript:</b> {transcript || 'Transcribing...'}
-            </Typography>
-            <Box display="flex" gap={2}>
+          </Paper>
+          {/* Controls and transcript */}
+          <Box className={styles.controls} width="100%" display="flex" flexDirection="column" alignItems="center">
+            {!isRecording && !isTimerComplete && !isTranscribing && countdown === 0 && (
               <Button
-                variant="outlined"
+                variant="contained"
                 color="primary"
-                onClick={handleReRecord}
+                onClick={initiateRecording}
+                disabled={!cameraStream}
                 size="large"
+                style={{ minWidth: 180, marginBottom: 16 }}
               >
-                Re-record
+                Start Recording
               </Button>
-              {currentQuestion < questions.length - 1 ? (
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={handleNext}
-                  disabled={!transcript}
-                  size="large"
-                >
-                  Next Question
-                </Button>
-              ) : (
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={handleFinalSubmit}
-                  disabled={!transcript}
-                  size="large"
-                >
-                  Submit
-                </Button>
-              )}
-            </Box>
+            )}
+            {isRecording && (
+              <Typography variant="body1" color="primary" style={{ marginTop: 12 }}>
+                Recording... Speak your answer
+              </Typography>
+            )}
+            {isTimerComplete && !isTranscribing && (
+              <Box display="flex" flexDirection="column" alignItems="center" gap={2} width="100%">
+                <Box display="flex" gap={2}>
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    onClick={handleReRecord}
+                    size="large"
+                  >
+                    Re-record
+                  </Button>
+                  {currentQuestion < questions.length - 1 ? (
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={handleNext}
+                      disabled={!transcript}
+                      size="large"
+                    >
+                      Next Question
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={handleFinalSubmit}
+                      disabled={!transcript || isSubmitting}
+                      size="large"
+                    >
+                      {isSubmitting ? 'Submitting...' : 'Submit'}
+                    </Button>
+                  )}
+                </Box>
+              </Box>
+            )}
+            {isTranscribing && (
+              <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
+                <CircularProgress style={{ margin: 16 }} />
+                <Typography variant="body2">Transcribing your answer...</Typography>
+              </Box>
+            )}
           </Box>
-        )}
-        {isTranscribing && (
-          <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
-            <CircularProgress style={{ margin: 16 }} />
-            <Typography variant="body2">Transcribing your answer...</Typography>
+        </Box>
+        {/* Right half: Video preview */}
+        <Box flex={1} display="flex" flexDirection="column" justifyContent="center" alignItems="center" bgcolor="#f7f9fa" position="relative">
+          <Box className={styles.videoContainer} display="flex" flexDirection="column" alignItems="center" justifyContent="center" width="100%">
+            <video
+              ref={updateCameraSource}
+              autoPlay
+              playsInline
+              muted
+              className={styles.video}
+              style={{ width: '90%', maxWidth: 480, borderRadius: 16, boxShadow: '0 4px 24px rgba(0,0,0,0.10)' }}
+            />
+            {countdown > 0 && (
+              <Typography variant="h1" className={styles.countdown} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: '#1976d2', fontWeight: 700, textShadow: '0 2px 8px #fff' }}>
+                {countdown}
+              </Typography>
+            )}
+            {isRecording && (
+              <Typography variant="h5" className={styles.timer} style={{ position: 'absolute', top: 24, right: 32, background: '#fff', borderRadius: 8, padding: '4px 16px', boxShadow: '0 2px 8px #eee' }}>
+                {timeLeft}s
+              </Typography>
+            )}
           </Box>
-        )}
+        </Box>
       </Box>
       <Snackbar
         open={showErrorSnackbar}
@@ -428,8 +450,9 @@ const InterviewRecorder = () => {
               color="primary"
               onClick={handleFinalSubmit}
               style={{ marginRight: 16 }}
+              disabled={isSubmitting}
             >
-              Submit
+              {isSubmitting ? 'Submitting...' : 'Submit'}
             </Button>
             <Button
               variant="outlined"
