@@ -1,46 +1,57 @@
 import { useState, useEffect, useRef } from 'react';
-import { Box, Typography, TextField, Button, CircularProgress, Alert, Snackbar } from '@mui/material';
+import { Box, Typography, Button, CircularProgress, Alert, Snackbar, Stepper, Step, StepLabel, Paper } from '@mui/material';
 import { useStreams } from 'contexts/streams';
 import useVideoSource from 'hooks/useVideoSource';
+import { fetchRoundQuestions } from 'services/api';
 import styles from './InterviewRecorder.module.css';
 
 const INTERVIEW_DURATION = 5; // 1 minute in seconds
 const COUNTDOWN_DURATION = 3; // 3 seconds countdown
 
-// Error messages for different scenarios
 const ERROR_MESSAGES = {
   CAMERA_PERMISSION: 'Camera access is required. Please allow camera access and try again.',
   CAMERA_IN_USE: 'Camera is already in use by another application. Please close other applications using the camera.',
   RECORDING_FAILED: 'Failed to start recording. Please try again.',
-  SUBMISSION_FAILED: 'Failed to submit video. Please check your internet connection and try again.',
-  INVALID_EMAIL: 'Please enter a valid email address.',
   NETWORK_ERROR: 'Network error. Please check your internet connection and try again.',
-  SERVER_ERROR: 'Server error. Please try again later.',
-  FILE_TOO_LARGE: 'Video file is too large. Please try recording a shorter video.',
   UNKNOWN_ERROR: 'An unexpected error occurred. Please try again.',
 };
 
 const InterviewRecorder = () => {
-  const [timeLeft, setTimeLeft] = useState(INTERVIEW_DURATION);
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [questionsLoading, setQuestionsLoading] = useState(true);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [answers, setAnswers] = useState<{ video: Blob; transcript: string }[]>([]);
   const [countdown, setCountdown] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
-  const [email, setEmail] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [hasStarted, setHasStarted] = useState(false);
   const [isTimerComplete, setIsTimerComplete] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(INTERVIEW_DURATION);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
   const [showErrorSnackbar, setShowErrorSnackbar] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcript, setTranscript] = useState<string>('');
+  const [showSubmit, setShowSubmit] = useState(false);
+  const [success, setSuccess] = useState(false);
+
   const { cameraStream } = useStreams();
   const updateCameraSource = useVideoSource(cameraStream);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
 
-  // Validate email format
-  const validateEmail = (email: string) => {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
-  };
+  // Fetch questions from API on mount
+  useEffect(() => {
+    setQuestionsLoading(true);
+    fetchRoundQuestions()
+      .then((q) => {
+        setQuestions(q);
+        setQuestionsLoading(false);
+      })
+      .catch((err) => {
+        setQuestionsError('Failed to load questions.');
+        setQuestionsLoading(false);
+      });
+  }, []);
 
   // Handle camera permission errors
   const handleCameraError = async () => {
@@ -86,7 +97,7 @@ const InterviewRecorder = () => {
       timer = setInterval(() => {
         setTimeLeft((prev) => prev - 1);
       }, 1000);
-    } else if (timeLeft === 0) {
+    } else if (timeLeft === 0 && isRecording) {
       stopRecording();
       setIsTimerComplete(true);
     }
@@ -96,7 +107,6 @@ const InterviewRecorder = () => {
   const initiateRecording = async () => {
     const hasError = await handleCameraError();
     if (hasError) return;
-    
     setCountdown(COUNTDOWN_DURATION);
   };
 
@@ -106,36 +116,29 @@ const InterviewRecorder = () => {
       setShowErrorSnackbar(true);
       return;
     }
-
     try {
       recordedChunksRef.current = [];
       const mediaRecorder = new MediaRecorder(cameraStream, {
         mimeType: 'video/webm;codecs=vp8,opus',
-        videoBitsPerSecond: 2500000, // 2.5 Mbps
+        videoBitsPerSecond: 2500000,
       });
-
       mediaRecorderRef.current = mediaRecorder;
-
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           recordedChunksRef.current.push(event.data);
         }
       };
-
       mediaRecorder.onerror = (event) => {
-        console.error('MediaRecorder error:', event);
         setError(ERROR_MESSAGES.RECORDING_FAILED);
         setShowErrorSnackbar(true);
         stopRecording();
       };
-
-      mediaRecorder.start(1000); // Collect data every second
+      mediaRecorder.start(1000);
       setIsRecording(true);
-      setHasStarted(true);
       setIsTimerComplete(false);
       setTimeLeft(INTERVIEW_DURATION);
+      setTranscript('');
     } catch (error) {
-      console.error('Error starting recording:', error);
       setError(ERROR_MESSAGES.RECORDING_FAILED);
       setShowErrorSnackbar(true);
     }
@@ -147,105 +150,163 @@ const InterviewRecorder = () => {
         mediaRecorderRef.current.stop();
         setIsRecording(false);
       } catch (error) {
-        console.error('Error stopping recording:', error);
         setError(ERROR_MESSAGES.RECORDING_FAILED);
         setShowErrorSnackbar(true);
       }
     }
   };
 
-  const handleRetry = () => {
-    recordedChunksRef.current = [];
-    setTimeLeft(INTERVIEW_DURATION);
-    setHasStarted(false);
-    setIsTimerComplete(false);
-    setEmail('');
-    setError(null);
-    setSuccess(false);
-  };
-
-  const handleSubmit = async () => {
-    if (!email) {
-      setError(ERROR_MESSAGES.INVALID_EMAIL);
-      setShowErrorSnackbar(true);
+  // Start browser speech recognition
+  const startSpeechRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setTranscript('Speech recognition not supported in this browser.');
       return;
     }
-
-    if (!validateEmail(email)) {
-      setError(ERROR_MESSAGES.INVALID_EMAIL);
-      setShowErrorSnackbar(true);
-      return;
-    }
-
-    if (!recordedChunksRef.current.length) {
-      setError(ERROR_MESSAGES.RECORDING_FAILED);
-      setShowErrorSnackbar(true);
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError(null);
-    setSuccess(false);
-
-    try {
-      const videoBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      
-      // Check file size (max 100MB)
-      if (videoBlob.size > 100 * 1024 * 1024) {
-        throw new Error(ERROR_MESSAGES.FILE_TOO_LARGE);
-      }
-
-      const formData = new FormData();
-      formData.append('video', videoBlob, 'interview.webm');
-      formData.append('email', email);
-
-      const response = await fetch('http://your-frontend-api.com/api/interview-submission', {
-        method: 'POST',
-        body: formData,
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        if (response.status >= 500) {
-          throw new Error(ERROR_MESSAGES.SERVER_ERROR);
-        } else if (response.status === 413) {
-          throw new Error(ERROR_MESSAGES.FILE_TOO_LARGE);
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognitionRef.current = recognition;
+    let finalTranscript = '';
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
         } else {
-          throw new Error(errorData.message || ERROR_MESSAGES.SUBMISSION_FAILED);
+          interim += event.results[i][0].transcript;
         }
       }
+      setTranscript(finalTranscript + interim);
+    };
+    recognition.onerror = (event: any) => {
+      setTranscript('Speech recognition error: ' + JSON.stringify(event));
+    };
+    recognition.start();
+  };
 
-      const data = await response.json();
-      setSuccess(true);
-      
-      // Reset state after successful submission
-      setEmail('');
-      recordedChunksRef.current = [];
-      setTimeLeft(INTERVIEW_DURATION);
-      setHasStarted(false);
-      setIsTimerComplete(false);
-    } catch (error) {
-      console.error('Error submitting video:', error);
-      if (error instanceof Error) {
-        setError(error.message);
-      } else {
-        setError(ERROR_MESSAGES.UNKNOWN_ERROR);
-      }
-      setShowErrorSnackbar(true);
-    } finally {
-      setIsSubmitting(false);
+  // Stop browser speech recognition
+  const stopSpeechRecognition = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
     }
   };
+
+  // Start speech recognition when recording starts
+  useEffect(() => {
+    if (isRecording) {
+      setTranscript('');
+      startSpeechRecognition();
+    } else {
+      stopSpeechRecognition();
+    }
+    // eslint-disable-next-line
+  }, [isRecording]);
+
+  const handleReRecord = () => {
+    recordedChunksRef.current = [];
+    setTimeLeft(INTERVIEW_DURATION);
+    setIsTimerComplete(false);
+    setTranscript('');
+    setIsRecording(false);
+    setCountdown(0);
+  };
+
+  const handleNext = () => {
+    // Save answer
+    const videoBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+    setAnswers((prev) => [
+      ...prev,
+      { video: videoBlob, transcript },
+    ]);
+    // Reset for next question
+    recordedChunksRef.current = [];
+    setTimeLeft(INTERVIEW_DURATION);
+    setIsTimerComplete(false);
+    setTranscript('');
+    setIsRecording(false);
+    setCountdown(0);
+    if (currentQuestion < questions.length - 1) {
+      setCurrentQuestion((q) => q + 1);
+    } else {
+      setShowSubmit(true);
+    }
+  };
+
+  const handleFinalSubmit = () => {
+    // Save last answer if not already saved
+    if (answers.length < questions.length) {
+      const videoBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      setAnswers((prev) => [
+        ...prev,
+        { video: videoBlob, transcript },
+      ]);
+    }
+    setSuccess(true);
+    setShowSubmit(false);
+    // Log all answers
+    setTimeout(() => {
+      console.log('All answers:', [
+        ...answers,
+        { video: new Blob(recordedChunksRef.current, { type: 'video/webm' }), transcript },
+      ]);
+    }, 500);
+  };
+
+  // Add a useEffect to log the transcript when recording is done
+  useEffect(() => {
+    if (isTimerComplete && transcript) {
+      console.log(`Transcript for Q${currentQuestion + 1}:`, transcript);
+    }
+    // eslint-disable-next-line
+  }, [isTimerComplete, transcript]);
+
+  // UI
+  if (questionsLoading) {
+    return (
+      <Box className={styles.container} display="flex" alignItems="center" justifyContent="center" minHeight="300px">
+        <CircularProgress />
+        <Typography variant="h6" style={{ marginLeft: 16 }}>Loading questions...</Typography>
+      </Box>
+    );
+  }
+  if (questionsError || !questions.length) {
+    return (
+      <Box className={styles.container} display="flex" alignItems="center" justifyContent="center" minHeight="300px">
+        <Alert severity="error">{questionsError || 'No questions found.'}</Alert>
+      </Box>
+    );
+  }
+
+  if (success) {
+    return (
+      <Paper elevation={3} className={styles.container} style={{ textAlign: 'center', padding: 32 }}>
+        <Typography variant="h4" color="primary" gutterBottom>
+          Hurray! You've submitted the assignment.
+        </Typography>
+        <Typography variant="h6" color="textSecondary">
+          We'll get back to you soon.
+        </Typography>
+      </Paper>
+    );
+  }
 
   return (
     <Box className={styles.container}>
-      <Typography variant="h4" className={styles.question}>
-        Introduce yourself in a minute
-      </Typography>
-
+      <Stepper activeStep={currentQuestion} alternativeLabel style={{ marginBottom: 24 }}>
+        {questions.map((q, idx) => (
+          <Step key={q} completed={answers.length > idx}>
+            <StepLabel>Q{idx + 1}</StepLabel>
+          </Step>
+        ))}
+      </Stepper>
+      <Paper elevation={2} className={styles.questionBox}>
+        <Typography variant="h5" className={styles.question} style={{ marginBottom: 8 }}>
+          {questions[currentQuestion]}
+        </Typography>
+      </Paper>
       <Box className={styles.videoContainer}>
         <video
           ref={updateCameraSource}
@@ -265,56 +326,72 @@ const InterviewRecorder = () => {
           </Typography>
         )}
       </Box>
-
       <Box className={styles.controls}>
-        {!hasStarted ? (
+        {!isRecording && !isTimerComplete && !isTranscribing && countdown === 0 && (
           <Button
             variant="contained"
             color="primary"
             onClick={initiateRecording}
-            disabled={!cameraStream || countdown > 0}
+            disabled={!cameraStream}
+            size="large"
+            style={{ minWidth: 180 }}
           >
             Start Recording
           </Button>
-        ) : isTimerComplete ? (
-          <>
-            <TextField
-              label="Email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className={styles.emailInput}
-              error={!!error}
-              helperText={error}
-            />
-            {success && (
-              <Alert severity="success" className={styles.alert}>
-                Video submitted successfully!
-              </Alert>
-            )}
-            <Box className={styles.buttonGroup}>
+        )}
+        {isRecording && (
+          <Typography variant="body1" color="primary" style={{ marginTop: 12 }}>
+            Recording... Speak your answer
+          </Typography>
+        )}
+        {isTimerComplete && !isTranscribing && (
+          <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
+            <Typography variant="subtitle1" color="secondary" style={{ margin: '12px 0' }}>
+              Recording complete!
+            </Typography>
+            <Typography variant="body2" style={{ marginBottom: 8 }}>
+              <b>Transcript:</b> {transcript || 'Transcribing...'}
+            </Typography>
+            <Box display="flex" gap={2}>
               <Button
                 variant="outlined"
                 color="primary"
-                onClick={handleRetry}
-                disabled={isSubmitting}
+                onClick={handleReRecord}
+                size="large"
               >
-                Retry
+                Re-record
               </Button>
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={handleSubmit}
-                disabled={!email || isSubmitting}
-              >
-                {isSubmitting ? <CircularProgress size={24} /> : 'Submit Video'}
-              </Button>
+              {currentQuestion < questions.length - 1 ? (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handleNext}
+                  disabled={!transcript}
+                  size="large"
+                >
+                  Next Question
+                </Button>
+              ) : (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handleFinalSubmit}
+                  disabled={!transcript}
+                  size="large"
+                >
+                  Submit
+                </Button>
+              )}
             </Box>
-          </>
-        ) : null}
+          </Box>
+        )}
+        {isTranscribing && (
+          <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
+            <CircularProgress style={{ margin: 16 }} />
+            <Typography variant="body2">Transcribing your answer...</Typography>
+          </Box>
+        )}
       </Box>
-
       <Snackbar
         open={showErrorSnackbar}
         autoHideDuration={6000}
@@ -329,6 +406,41 @@ const InterviewRecorder = () => {
           {error}
         </Alert>
       </Snackbar>
+      {/* Submit confirmation dialog */}
+      {showSubmit && (
+        <Box
+          position="fixed"
+          top={0}
+          left={0}
+          width="100vw"
+          height="100vh"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          style={{ background: 'rgba(0,0,0,0.25)', zIndex: 9999 }}
+        >
+          <Paper elevation={4} style={{ padding: 32, textAlign: 'center' }}>
+            <Typography variant="h5" gutterBottom>
+              Ready to submit your answers?
+            </Typography>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={handleFinalSubmit}
+              style={{ marginRight: 16 }}
+            >
+              Submit
+            </Button>
+            <Button
+              variant="outlined"
+              color="primary"
+              onClick={() => setShowSubmit(false)}
+            >
+              Cancel
+            </Button>
+          </Paper>
+        </Box>
+      )}
     </Box>
   );
 };
